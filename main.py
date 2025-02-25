@@ -89,14 +89,15 @@ class CardButton(discord.ui.Button):
             item.disabled = True  
         
         async with bot.db.acquire() as conn:  
+            # Modified the SQL query to be more explicit
             await conn.execute('''  
                 INSERT INTO inventory (user_id, card_id, quantity, grabbed_time)  
                 VALUES ($1, $2, 1, CURRENT_TIMESTAMP)  
-                ON CONFLICT(user_id, card_id) DO UPDATE SET   
-                quantity = quantity + 1,  
-                grabbed_time = CURRENT_TIMESTAMP  
+                ON CONFLICT (user_id, card_id) DO UPDATE 
+                SET quantity = inventory.quantity + 1,  
+                    grabbed_time = CURRENT_TIMESTAMP  
             ''', user_id, card_id)  
-            await conn.commit()  
+            # Remove await conn.commit() as asyncpg auto-commits
 
         # Update the message with disabled buttons  
         await interaction.response.edit_message(view=self.view)  
