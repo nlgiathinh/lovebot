@@ -160,7 +160,6 @@ async def drop_error(ctx, error):
 import discord  
 from discord.ext import commands  
 from discord.ui import View, Button  
-import aiosqlite  
 from datetime import datetime  
 
 class PaginationView(View):  
