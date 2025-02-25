@@ -110,28 +110,28 @@ class CardButton(discord.ui.Button):
 #@commands.cooldown(1, 120, commands.BucketType.user)  # 1 use every 120 seconds (2 minutes)
 async def drop(ctx):  
     async with bot.db.acquire() as conn:  
-        cursor = await conn.execute('SELECT * FROM cards')  
-        all_cards = await cursor.fetchall()  
+        # Use fetch instead of execute for SELECT queries
+        all_cards = await conn.fetch('SELECT * FROM cards')
         
-    if len(all_cards) < 3:  
-        await ctx.send("Not enough cards in the database!")  
-        return  
+        if len(all_cards) < 3:  
+            await ctx.send("Not enough cards in the database!")  
+            return  
+            
+        selected_cards = random.sample(all_cards, 3)  
+        images = []  
+        card_data = []  
         
-    selected_cards = random.sample(all_cards, 3)  
-    images = []  
-    card_data = []  
-    
-    for card in selected_cards:  
-        img = Image.open(BytesIO(card[4]))  # card[4] is the image blob  
-        img = img.resize((int(img.width * 500/img.height), 500))  
-        images.append(img)  
-        card_data.append({  
-            'id': card[0],  
-            'name': card[1],  
-            'date': card[2],  
-            'series': card[3],  
-            'notes': card[5]  
-        })  
+        for card in selected_cards:  
+            img = Image.open(BytesIO(card['image']))  # Use dictionary access
+            img = img.resize((int(img.width * 500/img.height), 500))  
+            images.append(img)  
+            card_data.append({  
+                'id': card['id'],
+                'name': card['name'],
+                'date': card['date'],
+                'series': card['series'],
+                'notes': card['notes']
+            })  
 
     # Combine images  
     total_width = sum(img.width for img in images) + 40  # 20px spacing between images  
@@ -439,16 +439,15 @@ def create_collage(collected_blobs, card_ids, target_height=400):
 async def album(ctx, *, series_keyword: str):  
     async with bot.db.acquire() as conn:  
         # Get all series first  
-        cursor = await conn.execute('SELECT DISTINCT series FROM cards ORDER BY series')  
-        all_series = await cursor.fetchall()  
+        all_series = await conn.fetch('SELECT DISTINCT series FROM cards ORDER BY series')
         
         # Normalize the search keyword  
         normalized_keyword = normalize_vietnamese(series_keyword.lower())  
         
         # Filter series using normalized comparison  
         matching_series = [  
-            series for series in all_series   
-            if normalized_keyword in normalize_vietnamese(series[0].lower())  
+            series['series'] for series in all_series   
+            if normalized_keyword in normalize_vietnamese(series['series'].lower())  
         ]  
         
         if not matching_series:  
@@ -456,11 +455,11 @@ async def album(ctx, *, series_keyword: str):
             return  
         
         if len(matching_series) > 1:  
-            series_list = '\n'.join([f"• {series[0]}" for series in matching_series])  
+            series_list = '\n'.join([f"• {series}" for series in matching_series])  
             await ctx.send(f"Tìm thấy nhiều series phù hợp với từ khóa '{series_keyword}':\n{series_list}\nVui lòng chọn một series cụ thể.")  
             return  
         
-        series_name = matching_series[0][0]  
+        series_name = matching_series[0]  
         
         # Get all cards from the matched series  
         all_cards = await conn.fetch('''  
@@ -469,7 +468,6 @@ async def album(ctx, *, series_keyword: str):
             WHERE series = $1  
             ORDER BY id  
         ''', series_name)  
-        all_cards = await cursor.fetchall()  
         
         # Get user's collected cards from this series  
         collected_rows = await conn.fetch('''  
@@ -479,16 +477,16 @@ async def album(ctx, *, series_keyword: str):
                 SELECT id FROM cards WHERE series = $2  
             )  
         ''', ctx.author.id, series_name)  
+        
         collected_ids = [row['card_id'] for row in collected_rows]  
-        collected_ids = [row[0] for row in await cursor.fetchall()]  
         
         # Calculate progress  
         total_cards = len(all_cards)  
         collected_count = len(collected_ids)  
         
         # Get series emoji  
-        series_emoji = all_cards[0][2] if all_cards[0][2] else "🃏"  
-        if series_emoji.isdigit():  
+        series_emoji = all_cards[0]['series_emoji'] if all_cards and all_cards[0]['series_emoji'] else "🃏"  
+        if series_emoji and series_emoji.isdigit():  
             series_emoji = f"<:card:{series_emoji}>"  
         
         progress = f"{series_emoji} Progress: {collected_count}/{total_cards}"  
@@ -499,30 +497,30 @@ async def album(ctx, *, series_keyword: str):
             color=discord.Color.pink()  
         )  
         await ctx.send(embed=embed)
-    # Group cards into sets of 4  
-    for i in range(0, len(all_cards), 4):  
-        group = all_cards[i:i+4]  
-        group_images = []  
-        group_ids = []  # Store card IDs  
-        
-        for card in group:  
-            if card[0] in collected_ids:  # If card is collected  
-                group_images.append(card[1])  # Use original image  
-            else:  # If card is not collected  
-                blurred = create_blurred_card(card[1], 400)  
-                with io.BytesIO() as img_byte:  
-                    blurred.save(img_byte, 'PNG')  
-                    group_images.append(img_byte.getvalue())  
-            group_ids.append(card[0])  # Add card ID to the list  
-        
-        collage = create_collage(group_images, group_ids, target_height=400)  
-        
-        # Convert collage to bytes for sending  
-        with io.BytesIO() as image_binary:  
-            collage.save(image_binary, 'PNG')  
-            image_binary.seek(0)  
-            await ctx.send(file=discord.File(fp=image_binary, filename='collage.png'))  
-        
+
+        # Group cards into sets of 4  
+        for i in range(0, len(all_cards), 4):  
+            group = all_cards[i:i+4]  
+            group_images = []  
+            group_ids = []  # Store card IDs  
+            
+            for card in group:  
+                if card['id'] in collected_ids:  # If card is collected  
+                    group_images.append(card['image'])  # Use original image  
+                else:  # If card is not collected  
+                    blurred = create_blurred_card(card['image'], 400)  
+                    with io.BytesIO() as img_byte:  
+                        blurred.save(img_byte, 'PNG')  
+                        group_images.append(img_byte.getvalue())  
+                group_ids.append(card['id'])  # Add card ID to the list  
+            
+            collage = create_collage(group_images, group_ids, target_height=400)  
+            
+            # Convert collage to bytes for sending  
+            with io.BytesIO() as image_binary:  
+                collage.save(image_binary, 'PNG')  
+                image_binary.seek(0)  
+                await ctx.send(file=discord.File(fp=image_binary, filename='collage.png'))      
 
 
 #___________________________________________________________Memories___________________________________________________________
@@ -586,21 +584,19 @@ async def memories(ctx):
     try:  
         async with bot.db.acquire() as conn:  
             # Get total number of cards  
-            async with conn.execute('SELECT COUNT(*) FROM cards') as cursor:  
-                total_cards = await cursor.fetchone()  
+            total_cards = await conn.fetchval('SELECT COUNT(*) FROM cards')
                 
-            if total_cards[0] == 0:  
+            if total_cards == 0:  
                 await ctx.send("No cards found in the database.")  
                 return  
                 
             # Get a random card  
-            async with conn.execute('''  
+            card = await conn.fetchrow('''  
                 SELECT id, name, date, series, image, notes, series_emoji  
                 FROM cards  
                 ORDER BY RANDOM()  
                 LIMIT 1  
-            ''') as cursor:  
-                card = await cursor.fetchone()  
+            ''')
                 
             if not card:  
                 await ctx.send("Could not fetch a card.")  
@@ -608,13 +604,13 @@ async def memories(ctx):
                 
             # Create card info dictionary  
             card_info = {  
-                'id': card[0],  
-                'name': card[1],  
-                'date': card[2],  
-                'series': card[3],  
-                'image': card[4],  
-                'notes': card[5],  
-                'series_emoji': card[6]  
+                'id': card['id'],
+                'name': card['name'],
+                'date': card['date'],
+                'series': card['series'],
+                'image': card['image'],
+                'notes': card['notes'],
+                'series_emoji': card['series_emoji']
             }  
 
             # Create initial embed with just the card image  
