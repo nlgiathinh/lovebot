@@ -636,4 +636,4 @@ if __name__ == "__main__":
         print("Error: No token found! Make sure you have a .env file with DISCORD_TOKEN=your_token_here")  
     else:  
         print("Starting bot...")  
-        client.run(token)
+        bot.run(token)
