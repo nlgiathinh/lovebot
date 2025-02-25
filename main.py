@@ -21,37 +21,47 @@ bot = commands.Bot(command_prefix=".", intents=intents)
 
 # Database setup  
 # Modified database setup
+# Database setup  
 async def setup_database():
-    # Get DATABASE_URL from environment variable
-    database_url = os.getenv('DATABASE_URL')
-    
-    # Create connection pool
-    bot.db = await asyncpg.create_pool(database_url)
-    
-    # Create tables
-    async with bot.conn.acquire() as conn:
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS cards (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                date TEXT,
-                series TEXT,
-                image BYTEA,
-                notes TEXT,
-                series_emoji TEXT
-            )
-        ''')
+    try:
+        # Get DATABASE_URL from environment variable
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            raise ValueError("No DATABASE_URL environment variable found")
         
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS inventory (
-                user_id BIGINT,
-                card_id TEXT,
-                quantity INTEGER,
-                grabbed_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, card_id),
-                FOREIGN KEY (card_id) REFERENCES cards(id)
-            )
-        ''') 
+        # Create connection pool
+        bot.db = await asyncpg.create_pool(database_url)
+        print("Connected to PostgreSQL database!")
+        
+        # Create tables
+        async with bot.db.acquire() as conn:  # Changed from bot.conn to bot.db
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS cards (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    date TEXT,
+                    series TEXT,
+                    image BYTEA,
+                    notes TEXT,
+                    series_emoji TEXT
+                )
+            ''')
+            
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS inventory (
+                    user_id BIGINT,
+                    card_id TEXT,
+                    quantity INTEGER,
+                    grabbed_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, card_id),
+                    FOREIGN KEY (card_id) REFERENCES cards(id)
+                )
+            ''')
+            print("Database tables created/verified!")
+            
+    except Exception as e:
+        print(f"Database setup error: {str(e)}")
+        raise
 
 @bot.event  
 async def on_ready():  
@@ -78,14 +88,14 @@ class CardButton(discord.ui.Button):
         for item in self.view.children:  
             item.disabled = True  
         
-        async with bot.conn.acquire()('gacha.db') as conn:  
+        async with bot.db.acquire() as conn:  
             await conn.execute('''  
                 INSERT INTO inventory (user_id, card_id, quantity, grabbed_time)  
-                VALUES (?, ?, 1, CURRENT_TIMESTAMP)  
+                VALUES ($1, $2, 1, CURRENT_TIMESTAMP)  
                 ON CONFLICT(user_id, card_id) DO UPDATE SET   
                 quantity = quantity + 1,  
                 grabbed_time = CURRENT_TIMESTAMP  
-            ''', (user_id, card_id))  
+            ''', user_id, card_id)  
             await conn.commit()  
 
         # Update the message with disabled buttons  
@@ -99,7 +109,7 @@ class CardButton(discord.ui.Button):
 @bot.command(aliases=['d'])  
 #@commands.cooldown(1, 120, commands.BucketType.user)  # 1 use every 120 seconds (2 minutes)
 async def drop(ctx):  
-    async with bot.conn.acquire()('gacha.db') as conn:  
+    async with bot.db.acquire() as conn:  
         cursor = await conn.execute('SELECT * FROM cards')  
         all_cards = await cursor.fetchall()  
         
@@ -160,6 +170,7 @@ async def drop_error(ctx, error):
 import discord  
 from discord.ext import commands  
 from discord.ui import View, Button  
+import aiosqlite  
 from datetime import datetime  
 
 class PaginationView(View):  
@@ -202,8 +213,8 @@ class PaginationView(View):
 
 @bot.command(aliases=['c'])  
 async def inventory(ctx):  
-    async with bot.conn.acquire()('gacha.db') as conn:  
-        cursor = await conn.execute('''  
+    async with bot.db.acquire() as conn:  
+        rows = await conn.fetch('''  
             SELECT   
                 cards.id,  
                 inventory.quantity,  
@@ -214,11 +225,9 @@ async def inventory(ctx):
                 inventory.grabbed_time  
             FROM inventory  
             JOIN cards ON inventory.card_id = cards.id  
-            WHERE inventory.user_id = ?  
+            WHERE inventory.user_id = $1  
             ORDER BY inventory.grabbed_time DESC  
-        ''', (ctx.author.id,))  
-        
-        rows = await cursor.fetchall()  
+        ''', ctx.author.id)   
         
         if not rows:  
             await ctx.send("Eiu chưa sưu tập thẻ nào cả 😭")  
@@ -256,34 +265,32 @@ async def view(ctx, card_id=None):
         await ctx.send("Please provide a card ID to view!")  
         return  
 
-    async with bot.conn.acquire()('gacha.db') as conn:  
-        cursor = await conn.execute('''  
+    async with bot.db.acquire() as conn:  
+        owned = await conn.fetchrow('''  
             SELECT inventory.quantity   
             FROM inventory   
-            WHERE inventory.user_id = ? AND inventory.card_id = ?  
-        ''', (ctx.author.id, card_id))  
+            WHERE inventory.user_id = $1 AND inventory.card_id = $2  
+        ''', ctx.author.id, card_id)  
         
-        owned = await cursor.fetchone()  
         
         if not owned:  
             await ctx.send("You must own the card to view it!")  
             return  
 
-        cursor = await conn.execute('''  
+        row = await conn.fetchrow('''  
             SELECT cards.name,   
-                   cards.series,   
-                   cards.date,   
-                   cards.image,   
-                   cards.notes,  
-                   cards.series_emoji,  
-                   inventory.quantity  
+                cards.series,   
+                cards.date,   
+                cards.image,   
+                cards.notes,  
+                cards.series_emoji,  
+                inventory.quantity  
             FROM cards  
             LEFT JOIN inventory ON cards.id = inventory.card_id   
-                AND inventory.user_id = ?  
-            WHERE cards.id = ?  
-        ''', (ctx.author.id, card_id))  
+                AND inventory.user_id = $1  
+            WHERE cards.id = $2  
+        ''', ctx.author.id, card_id)  
         
-        row = await cursor.fetchone()  
         
         if not row:  
             await ctx.send("Card not found!")  
@@ -431,7 +438,7 @@ def create_collage(collected_blobs, card_ids, target_height=400):
 
 @bot.command(aliases=['a'])  
 async def album(ctx, *, series_keyword: str):  
-    async with bot.conn.acquire()('gacha.db') as conn:  
+    async with bot.db.acquire() as conn:  
         # Get all series first  
         cursor = await conn.execute('SELECT DISTINCT series FROM cards ORDER BY series')  
         all_series = await cursor.fetchall()  
@@ -457,22 +464,23 @@ async def album(ctx, *, series_keyword: str):
         series_name = matching_series[0][0]  
         
         # Get all cards from the matched series  
-        cursor = await conn.execute('''  
+        all_cards = await conn.fetch('''  
             SELECT id, image, series_emoji  
             FROM cards  
-            WHERE series = ?  
+            WHERE series = $1  
             ORDER BY id  
-        ''', (series_name,))  
+        ''', series_name)  
         all_cards = await cursor.fetchall()  
         
         # Get user's collected cards from this series  
-        cursor = await conn.execute('''  
+        collected_rows = await conn.fetch('''  
             SELECT card_id  
             FROM inventory  
-            WHERE user_id = ? AND card_id IN (  
-                SELECT id FROM cards WHERE series = ?  
+            WHERE user_id = $1 AND card_id IN (  
+                SELECT id FROM cards WHERE series = $2  
             )  
-        ''', (ctx.author.id, series_name))  
+        ''', ctx.author.id, series_name)  
+        collected_ids = [row['card_id'] for row in collected_rows]  
         collected_ids = [row[0] for row in await cursor.fetchall()]  
         
         # Calculate progress  
@@ -577,7 +585,7 @@ class MemoriesView(View):
 @bot.command(aliases=['m'])  
 async def memories(ctx):  
     try:  
-        async with bot.conn.acquire()('gacha.db') as conn:  
+        async with bot.db.acquire() as conn:  
             # Get total number of cards  
             async with conn.execute('SELECT COUNT(*) FROM cards') as cursor:  
                 total_cards = await cursor.fetchone()  
