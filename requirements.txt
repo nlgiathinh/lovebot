@@ -1,0 +1,6 @@
+discord.py
+pillow
+asyncio
+psycopg2-binary
+asyncpg
+python-dotenv
