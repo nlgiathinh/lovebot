@@ -630,4 +630,10 @@ async def memories(ctx):
         print(f"Error in memories command: {e}")  
         await ctx.send("An error occurred while fetching the card.")
 # Run the bot  
-bot.run(os.getenv('DISCORD_TOKEN'))
+if __name__ == "__main__":  
+    token = os.getenv('DISCORD_TOKEN')  
+    if not token:  
+        print("Error: No token found! Make sure you have a .env file with DISCORD_TOKEN=your_token_here")  
+    else:  
+        print("Starting bot...")  
+        client.run(token)
